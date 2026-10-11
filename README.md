@@ -11,8 +11,14 @@ of coloured bricks on a round watch face. Sibling project of
 game — with the same hand-written renderer, procedural audio engine and CI
 architecture, laid out for a disc and driven by a rotary encoder.
 
-> **Status:** engine, gameplay, build, tests and CI are in. The Auto Play
-> autopilot lands in the next pull request.
+## Screenshots
+
+Captured on a Wear OS emulator (API 34, large round, 454×454) with
+**Auto Play** driving the round.
+
+| Title | Auto Play, level 1 | Settings |
+|:---:|:---:|:---:|
+| <img src="docs/screenshots/title.png" width="240" alt="Title screen: the demo wall, the bouncing ball and the paddle in the disc"> | <img src="docs/screenshots/autoplay-action.png" width="240" alt="Level 1 under Auto Play: six bricks left, the wide-paddle timer under the paddle, five balls left as dots"> | <img src="docs/screenshots/settings.png" width="240" alt="Settings overlay with the Sound and Auto Play rows"> |
 
 ## Gameplay
 
@@ -61,7 +67,24 @@ architecture, laid out for a disc and driven by a rotary encoder.
   row highest), ball-lost slide, level-clear and extra-life jingles, pickup
   sparkle, and a 92 BPM ambient bed.
 - **Settings:** gear icon opens an overlay from the title and end screens.
-  Toggles: Sound on/off. Persists across app restarts.
+  Toggles: Sound on/off, Auto Play. Both persist across app restarts.
+- **Auto Play:** AI autopilot — it plays the way a good player does. It works
+  out where the ball will come down (the flight is simulated with the same
+  collision rules as the game, bricks included), gets the paddle there, and
+  picks *where on the paddle* to take it: the hit offset sets the rebound
+  angle, so the offset is the aim. Every candidate rebound is simulated
+  against the wall; the one that hits the most bricks per second of flight
+  and still comes down somewhere the paddle can reach wins, and when no
+  single rebound reaches the last bricks it looks one trip further. It
+  never plans a dead-centre hit (those leave at the minimum angle, left or
+  right by a hair's width of paddle placement — a coin toss), it keeps the
+  other balls of a multi-ball reachable, it collects a bonus capsule when it
+  can be under it and still back under the ball in time (an extra life
+  first, a bonus already running with time left never), and it launches a
+  served ball as soon as the grace is over. It drives the same paddle
+  target the crown drives. Activate from Settings; the gear turns green and
+  a pulsing "AUTO" badge shows at the top while it plays. Every change to
+  it is measured with the [Auto Play bench](#auto-play-bench-host-build).
 - **Resumes after process death:** level, score and lives are saved with the
   activity state; the wall comes back fresh.
 
@@ -128,7 +151,7 @@ clockwise, `-1` anticlockwise).
 
 ### Native unit tests (Google Test)
 
-66 tests covering the wall (five columns in the lane, rows per level, every
+81 tests covering the wall (five columns in the lane, rows per level, every
 wall inside the disc, tough/armoured/steel bricks arriving with the levels,
 holes, level clamp at 10), serve and launch (grace, tap, self-launch, the
 held ball following the paddle), the crown (one detent one step, clamped to
@@ -145,10 +168,16 @@ progression (level-scaled clear bonus, in-flight wipe on clear, win at level
 10, game over grace tap, title-return cleanup, no gear during a round),
 process-death session restore (bounds-checked), high-score persistence
 (ordering, displacement, cap, save and reload, zero-score guard, tie guard),
-the settings state machine (gear tap, sound toggle, back button, no gear
-inside Settings, persistence), the title demo (ball inside the lane, the
-crown moving the demo paddle) and render coverage of every reachable state
-with every shape inside the disc.
+the Auto Play AI (self-launch after the grace, landing prediction matching
+the real flight, going under the ball, catching a ball off the wall, aiming
+the rebound at the last brick, never a dead-centre plan, capsule pickup when
+there is time and not when the ball comes first, no detour for a running
+bonus but always for a life, saving the ball that comes down first,
+replanning on a bounce, driving the crown's own paddle target, a clean
+level-one clear on four seeds, multi-ball), the settings state machine (gear
+tap, toggles, back button, no gear inside Settings, persistence), the title
+demo (ball inside the lane, the crown moving the demo paddle) and render
+coverage of every reachable state with every shape inside the disc.
 
 They build and run on the host in a few seconds — no device, no emulator:
 
@@ -164,6 +193,32 @@ The same binary runs on a connected watch or emulator through Gradle:
 ./gradlew runNativeTests -PtestAbi=x86_64  # x86_64 emulator
 ANDROID_SERIAL=emulator-5556 ./gradlew runNativeTests   # several devices? pin one
 ```
+
+### Auto Play bench (host build)
+
+`scripts/autoplay-bench.sh` compiles `game.cpp` with the host compiler (no
+Android SDK, no emulator — `app/src/main/cpp/test/host/` stands in for
+`<android/log.h>`) and plays seeded, headless rounds with the autopilot. It
+reports, per level and per campaign, how often the autopilot clears the wall,
+how many balls it loses, how long a clear takes, bricks per minute and paddle
+hits:
+
+```bash
+scripts/autoplay-bench.sh --runs 100 --levels --campaigns   # the watch
+scripts/autoplay-bench.sh --runs 50 --campaigns --trace     # dump every lost ball
+```
+
+Runs are seeded, so two builds of the same code give the same numbers and a
+change to the autopilot is a before/after comparison. CI plays 100 campaigns
+and fails when fewer than 95% are won. Numbers for the current autopilot:
+
+| Campaigns | Won | Balls lost per campaign | Length of a won campaign |
+|---|---|---|---|
+| 100 | 99% | 0.26 | 5.7 min |
+
+A level takes the autopilot 25 s on level 1 and 47 s on level 10. The one
+loss is a level-10 hunt for the last bricks behind the steel that ran past
+the bench's 8-minute cap, not a game over.
 
 ### Instrumented smoke test
 
@@ -184,7 +239,8 @@ merges.
 |-----|-------------|-----------|
 | **Build APK** | Compiles the debug APK | `debug-apk` |
 | **Host tests** | Builds `game.cpp` and the Google Test suite with the host compiler and runs it | — |
-| **Native Tests** | Runs the same 66 Google Test cases on x86\_64 Wear OS emulators (API 33 + API 34, `wearos_large_round`) | — |
+| **Auto Play bench** | Builds `game.cpp` on the host and plays 100 seeded campaigns with the autopilot; fails when fewer than 95% are won | — |
+| **Native Tests** | Runs the same 81 Google Test cases on x86\_64 Wear OS emulators (API 33 + API 34, `wearos_large_round`) | — |
 | **Smoke Test** | Runs the Android instrumented test on the same Wear OS emulators and captures an in-game screenshot. The test asserts the activity is RESUMED **and** that the renderer logged `First frame presented`, so a dead Vulkan path fails loudly | `smoke-screenshot-api*`, `smoke-test-results-api*`, `smoke-logcat-api*` |
 
 ## License

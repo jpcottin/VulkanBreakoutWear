@@ -133,6 +133,30 @@ private:
     void  syncMusic();
     static int numDigits(long v);
 
+    // --- auto-play AI (see game.cpp) ---
+    // A ball's flight, simulated with the same rules as updateBalls() until
+    // it comes down to the paddle line.
+    struct Flight {
+        bool  lands = false;     // reached the paddle line within the horizon
+        float x = 0.0f;          // where (centre x) and
+        float t = 0.0f;          // when (seconds from now)
+        int   hits = 0;          // brick hits on the way (a break counts twice)
+        float minY = 1.0f;       // highest point reached (smaller is higher)
+    };
+    // What the autopilot knows about one ball in play: its predicted landing
+    // and the rebound it has chosen for it. Valid while the ball keeps its
+    // direction; any bounce invalidates it.
+    struct Plan {
+        bool  valid = false;
+        float dx = 0.0f, dy = 0.0f;   // the direction the plan was made for
+        Flight land;
+        float u = 0.0f;               // chosen hit offset (-1..1 across the paddle)
+        float age = 0.0f;             // seconds since the plan was made
+    };
+    Flight simulateFlight(float x, float y, float dx, float dy, float speed,
+                          std::vector<int>& hp, float tMax) const;
+    void   makePlan(Plan& plan, const Ball& b, int ballIndex) const;
+    void   updateAutoPlay(float dt);
 
     // emit one shape: world centre (wx,wy), world half-extents (sx,sy), rotation, rgba.
     // style selects the fragment-shader fill (STYLE_FLAT default, STYLE_GLOW).
@@ -263,6 +287,14 @@ public:
     bool  newHighScoreForTest()   const { return newHighScore_; }
     void  setScoreForTest(long s)       { score_ = s; }
     void  setLivesForTest(int n)        { lives_ = n; }
+    bool  autoPlayActiveForTest() const { return autoPlayActive_; }
+    void  setAutoPlayForTest(bool v)    { autoPlayActive_ = v; }
+    bool  aiHasTargetForTest()    const { return aiMove_; }
+    float aiTargetXForTest()      const { return aiTargetX_; }
+    bool  aiHasLandingForTest()   const { return aiLanding_.lands; }
+    float aiLandingXForTest()     const { return aiLanding_.x; }
+    float aiLandingTForTest()     const { return aiLanding_.t; }
+    float aiPlanUForTest()        const { return aiPlanU_; }
     int   paddleHitsForTest()     const { return paddleHits_; }
     int   bricksBrokenForTest()   const { return bricksBroken_; }
     int   ballsLostForTest()      const { return ballsLost_; }
@@ -342,6 +374,13 @@ private:
     bool soundEnabled_   = true;
     bool autoPlayActive_ = false;
 
+    // --- auto-play AI (drives the same paddle target as the crown) ---
+    bool  aiMove_    = false;
+    float aiTargetX_ = 0.0f;
+    bool  aiLaunch_  = false;
+    std::vector<Plan> aiPlans_;      // one per ball, indexed like balls_
+    Flight aiLanding_;               // the primary ball's landing (tests / bench)
+    float  aiPlanU_ = 0.0f;          // its chosen hit offset
 
     uint32_t rng_ = 0x1234567u;
 };

@@ -111,6 +111,20 @@ jobs:
       - name: Build and run the native tests on the host
         run: scripts/host-tests.sh
 
+  # ── Auto Play bench: host build of game.cpp, seeded autopilot campaigns ───────
+  # Deterministic (seeded runs, fixed timestep), so the win-rate floor is a
+  # regression guard for the autopilot, not a flake source.
+  autoplay-bench:
+    name: Auto Play bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Play seeded campaigns on the watch
+        run: scripts/autoplay-bench.sh --runs 100 --levels --campaigns --min-campaign-win 95
+
   # ── Smoke test: instrumented launch test + screenshot ─────────────────────────
   smoke:
     name: Smoke Test (Wear OS API ${{ matrix.api-level }})
