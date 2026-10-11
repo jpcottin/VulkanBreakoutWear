@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Three rows of bricks (red, yellow, green), a paddle and the ball:
+         the same shapes the game draws, inside the 66dp safe zone. -->
+
+    <!-- red row -->
+    <path android:fillColor="#FF524D" android:pathData="M24,30h13.5v7h-13.5z M39.5,30h13.5v7h-13.5z M55,30h13.5v7h-13.5z M70.5,30h13.5v7h-13.5z" />
+    <path android:fillColor="#FF9C98" android:pathData="M24,30h13.5v1.5h-13.5z M39.5,30h13.5v1.5h-13.5z M55,30h13.5v1.5h-13.5z M70.5,30h13.5v1.5h-13.5z" />
+    <!-- yellow row -->
+    <path android:fillColor="#FFE640" android:pathData="M24,39h13.5v7h-13.5z M39.5,39h13.5v7h-13.5z M55,39h13.5v7h-13.5z M70.5,39h13.5v7h-13.5z" />
+    <path android:fillColor="#FFF2A0" android:pathData="M24,39h13.5v1.5h-13.5z M39.5,39h13.5v1.5h-13.5z M55,39h13.5v1.5h-13.5z M70.5,39h13.5v1.5h-13.5z" />
+    <!-- green row -->
+    <path android:fillColor="#66F266" android:pathData="M24,48h13.5v7h-13.5z M39.5,48h13.5v7h-13.5z M55,48h13.5v7h-13.5z M70.5,48h13.5v7h-13.5z" />
+    <path android:fillColor="#B3F8B3" android:pathData="M24,48h13.5v1.5h-13.5z M39.5,48h13.5v1.5h-13.5z M55,48h13.5v1.5h-13.5z M70.5,48h13.5v1.5h-13.5z" />
+
+    <!-- ball with a soft halo -->
+    <path android:fillColor="#40FFE6A0" android:pathData="M54,64 m-7,0 a7,7 0 1,0 14,0 a7,7 0 1,0 -14,0 z" />
+    <path android:fillColor="#FFF7D9" android:pathData="M54,64 m-3.6,0 a3.6,3.6 0 1,0 7.2,0 a3.6,3.6 0 1,0 -7.2,0 z" />
+
+    <!-- paddle: rounded cyan bar with a bright top line -->
+    <path android:fillColor="#4DB8F2" android:pathData="M40.5,76h27a2.5,2.5 0 0,1 2.5,2.5a2.5,2.5 0 0,1 -2.5,2.5h-27a2.5,2.5 0 0,1 -2.5,-2.5a2.5,2.5 0 0,1 2.5,-2.5z" />
+    <path android:fillColor="#CCF2FF" android:pathData="M41,76.6h26v1h-26z" />
+</vector>

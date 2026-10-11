@@ -1,0 +1,207 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+
+  # ── Build ────────────────────────────────────────────────────────────────────
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: gradle
+
+      - name: Install NDK 29
+        run: |
+          set -o pipefail  # a failed sdkmanager must fail the step, not tail
+          echo "y" | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager \
+            "ndk;29.0.14206865" 2>&1 | tail -3
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+  # ── Native tests ─────────────────────────────────────────────────────────────
+  test:
+    name: Native Tests (Wear OS API ${{ matrix.api-level }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Wear OS 4 and 5 images (tag android-wear). The newer API 36 and 37
+          # images (android-wear-signed) ship a Mesa-based Vulkan driver that
+          # cannot create an instance on the current emulator: no render node.
+          - api-level: 33
+            gpu: swiftshader_indirect
+          - api-level: 34
+            gpu: auto
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: gradle
+
+      - name: Install NDK 29
+        run: |
+          set -o pipefail  # a failed sdkmanager must fail the step, not tail
+          echo "y" | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager \
+            "ndk;29.0.14206865" 2>&1 | tail -3
+
+      - name: Enable KVM for hardware-accelerated emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run native tests on a Wear OS emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: x86_64
+          target: android-wear
+          profile: wearos_large_round
+          emulator-options: -no-window -gpu ${{ matrix.gpu }} -noaudio -no-boot-anim -verbose -show-kernel -debug-metrics -metrics-collection
+          disable-animations: true
+          emulator-boot-timeout: 900
+          script: ./gradlew runNativeTests -PtestAbi=x86_64 --no-daemon
+
+  # ── Host tests: the same Google Test suite, built with the host compiler ──────
+  # game.cpp has no Android dependency beyond <android/log.h>, which
+  # app/src/main/cpp/test/host/ stands in for. Minutes faster than the
+  # emulator legs, and the first thing to fail when the game logic breaks.
+  host-tests:
+    name: Host tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Google Test sources
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgtest-dev
+
+      - name: Build and run the native tests on the host
+        run: scripts/host-tests.sh
+
+  # ── Smoke test: instrumented launch test + screenshot ─────────────────────────
+  smoke:
+    name: Smoke Test (Wear OS API ${{ matrix.api-level }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - api-level: '33'
+            gpu: swiftshader_indirect
+          - api-level: '34'
+            gpu: auto
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: gradle
+
+      - name: Install NDK 29
+        run: |
+          set -o pipefail  # a failed sdkmanager must fail the step, not tail
+          echo "y" | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager \
+            "ndk;29.0.14206865" 2>&1 | tail -3
+
+      - name: Enable KVM for hardware-accelerated emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # The runner image ships an outdated avdmanager that writes target=android-0
+      # for minor-versioned packages (android-37.x); the emulator clamps that to
+      # API 3 and skips the Vulkan/GLDirectMem auto-enable, which previously had
+      # to be worked around with -feature GLDirectMem.
+      - name: Update SDK cmdline-tools
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "cmdline-tools;latest" > /dev/null
+          # sdkmanager won't overwrite the preinstalled dir; it installs to latest-2.
+          if [ -d "$SDK/cmdline-tools/latest-2" ]; then
+            rm -rf "$SDK/cmdline-tools/latest"
+            mv "$SDK/cmdline-tools/latest-2" "$SDK/cmdline-tools/latest"
+          fi
+          "$SDK/cmdline-tools/latest/bin/avdmanager" list device > /dev/null
+
+      - name: Run instrumented smoke test and capture screenshot
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: x86_64
+          target: android-wear
+          profile: wearos_large_round
+          emulator-options: -no-window -gpu ${{ matrix.gpu }} -noaudio -no-boot-anim -verbose -show-kernel -debug-metrics -metrics-collection
+          disable-animations: true
+          emulator-boot-timeout: 900
+          script: |
+            adb wait-for-device
+            ./gradlew connectedAndroidTest --no-daemon
+            # The screenshot was captured INSIDE the passing test (verified
+            # RESUMED + live swapchain) to /data/local/tmp, which survives the
+            # post-test uninstall — no unverified relaunch needed.
+            adb pull /data/local/tmp/smoke.png screenshot.png || true
+            adb logcat -d BreakoutWear:V AndroidRuntime:E *:S > logcat.txt || true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-test-results-api${{ matrix.api-level }}
+          path: app/build/outputs/androidTest-results/
+          if-no-files-found: warn
+
+      - name: Upload screenshot
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-screenshot-api${{ matrix.api-level }}
+          path: screenshot.png
+          if-no-files-found: warn
+
+      - name: Upload logcat
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-logcat-api${{ matrix.api-level }}
+          path: logcat.txt
+          if-no-files-found: warn
