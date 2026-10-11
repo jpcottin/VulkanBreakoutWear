@@ -105,6 +105,7 @@ static constexpr float kGearWY = 0.82f;
 
 // Settings row y-positions — shared between drawSettingsScreen() and the tap handler.
 static constexpr float kSettingSoundY    = -0.22f;
+static constexpr float kSettingAutoPlayY =  0.08f;
 static constexpr float kSettingBackY     =  0.56f;
 
 static const uint32_t kSettingsMagic = 0x53455454u;  // "SETT"
@@ -466,6 +467,7 @@ void Game::serveBall() {
     balls_.push_back(b);
     ballHeld_   = true;
     serveTimer_ = kServeDelay;
+    aiPlans_.clear();
 }
 
 // Up and to one side, 14-31 degrees off vertical.
@@ -717,6 +719,10 @@ void Game::update(float dt) {
             break;
         }
         case PLAYING: {
+            // Reset AI intents; updateAutoPlay sets them when autopilot is on.
+            aiMove_ = false; aiLaunch_ = false;
+            if (autoPlayActive_) updateAutoPlay(dt);
+            if (aiMove_) setPaddleTarget(aiTargetX_);
             // A finger on the screen drags the paddle target; the crown moves
             // it in steps (onRotary). The paddle glides to it either way.
             for (auto& p : pointers_)
@@ -730,6 +736,7 @@ void Game::update(float dt) {
                 bool launchNow = serveTimer_ <= 0.0f;
                 bool pastGrace = serveTimer_ <= kServeDelay - kServeGrace;
                 if (pastGrace && tapped) launchNow = true;
+                if (pastGrace && autoPlayActive_ && aiLaunch_) launchNow = true;
                 if (launchNow) launchBall();
             }
             updateBalls(dt);
@@ -766,6 +773,9 @@ void Game::update(float dt) {
                     soundEnabled_ = !soundEnabled_;
                     saveSettings();
                     syncMusic();
+                } else if (fabsf(wy - kSettingAutoPlayY) < kHitH) {
+                    autoPlayActive_ = !autoPlayActive_;
+                    saveSettings();
                 } else if (fabsf(wy - kSettingBackY) < kHitH && fabsf(wx) < 0.25f) {
                     onPointersCancel();
                     state_ = prevState_;
@@ -925,6 +935,314 @@ void Game::checkLevelClear() {
     }
     state_ = LEVEL_CLEAR;
     stateTimer_ = 0.0f;
+}
+
+// ── Auto-play AI ─────────────────────────────────────────────────────────────
+//
+// The autopilot plays the same way a good player does: it works out where the
+// ball will come down, gets the paddle there, and picks *where on the paddle*
+// to take it so the rebound does the most damage — the hit offset sets the
+// angle, so the choice of offset is the aim. Every candidate rebound is
+// simulated against the wall with the same collision rules as the real
+// update; the one that hits the most bricks per second of flight and still
+// comes down somewhere the paddle can reach wins. Predictions are cached
+// per ball and only redone when the ball changes direction (a bounce), so a
+// trip costs a handful of simulations, not one per frame.
+//
+// Bonus capsules are collected when the paddle can get there and still be
+// back under the ball in time; a ball resting on the paddle is launched as
+// soon as the serve delay is over.
+
+namespace {
+
+constexpr float kAiHorizon    = 8.0f;    // seconds of flight worth simulating
+constexpr int   kAiMaxSteps   = 4000;    // hard cap on a simulation
+constexpr float kAiCatchSlack = 0.85f;   // fraction of the half-width that still catches
+// Candidate hit offsets across the paddle: -1 is the left tip, +1 the right.
+// Nothing inside the dead zone (|u| < kAiMinOffset): every hit there leaves
+// at the 8-degree minimum, left or right by the sign of a hair's width of
+// paddle placement, so a plan there is a coin toss the simulation cannot
+// call.
+constexpr float kAiOffsets[] = {-0.85f, -0.60f, -0.35f, -0.16f, 0.16f, 0.35f, 0.60f, 0.85f};
+constexpr float kAiMinOffset = 0.16f;
+constexpr int   kAiOffsetCount = (int)(sizeof(kAiOffsets) / sizeof(kAiOffsets[0]));
+
+// The rebound direction for a hit at offset u — the same rule as
+// bounceOffPaddle(), including the never-vertical minimum.
+void reboundDir(float u, float& dx, float& dy) {
+    if (u >  1.0f) u =  1.0f;
+    if (u < -1.0f) u = -1.0f;
+    float a = u * kMaxBounceAngle;
+    if (fabsf(a) < kMinBounceAngle) a = u < 0.0f ? -kMinBounceAngle : kMinBounceAngle;
+    dx =  sinf(a);
+    dy = -cosf(a);
+}
+
+}  // namespace
+
+// Fly a ball from (x, y) along (dx, dy) until it comes down to the paddle
+// line. `hp` is a scratch copy of the wall (hit points per brick, 0 dead,
+// -1 steel) that the flight damages as it goes, so a second flight from the
+// landing point sees the bricks the first one broke.
+Game::Flight Game::simulateFlight(float x, float y, float dx, float dy, float speed,
+                                  std::vector<int>& hp, float tMax) const {
+    Flight f;
+    const float lim = kFieldHW - kBallR;
+    const float top = kTopWallY + kBallR;
+    const float paddleTop = kPaddleY - kPaddleHH;
+    // Below this line there is nothing to hit: skip the brick loop.
+    float wallBottom = kTopWallY;
+    if (rows_ > 0) wallBottom = kWallTopY + (float)(rows_ - 1) * (2.0f * kBrickHH + kBrickGapY) + kBrickHH;
+    const float sdt = kBallStep / speed;
+    float t = 0.0f;
+    for (int step = 0; step < kAiMaxSteps && t < tMax; step++) {
+        x += dx * kBallStep;
+        y += dy * kBallStep;
+        t += sdt;
+        if (x > lim && dx > 0.0f) { x = lim; dx = -dx; }
+        else if (x < -lim && dx < 0.0f) { x = -lim; dx = -dx; }
+        if (y < top && dy < 0.0f) { y = top; dy = -dy; ensureMinDy(dx, dy); }
+        if (y < f.minY) f.minY = y;
+        if (y - kBallR <= wallBottom) {
+            for (size_t i = 0; i < bricks_.size(); i++) {
+                if (hp[i] == 0) continue;
+                const Brick& br = bricks_[i];
+                float bx = x - brickX(br), by = y - brickY(br);
+                float px = kBrickHW + kBallR - fabsf(bx);
+                float py = kBrickHH + kBallR - fabsf(by);
+                if (px <= 0.0f || py <= 0.0f) continue;
+                if (px < py) {
+                    dx = bx > 0.0f ? fabsf(dx) : -fabsf(dx);
+                    x += bx > 0.0f ? px : -px;
+                } else {
+                    dy = by > 0.0f ? fabsf(dy) : -fabsf(dy);
+                    y += by > 0.0f ? py : -py;
+                }
+                ensureMinDy(dx, dy);
+                if (hp[i] > 0) {
+                    hp[i]--;
+                    f.hits += hp[i] == 0 ? 2 : 1;
+                }
+                break;
+            }
+        }
+        if (dy > 0.0f && y + kBallR >= paddleTop) {
+            f.lands = true;
+            f.x = x;
+            f.t = t;
+            return f;
+        }
+    }
+    return f;   // never came down within the horizon
+}
+
+// Predict where ball `b` lands and choose the rebound to give it there.
+void Game::makePlan(Plan& plan, const Ball& b, int ballIndex) const {
+    plan.valid = true;
+    plan.dx = b.dx; plan.dy = b.dy;
+    plan.age = 0.0f;
+    plan.u = 0.0f;
+    const float speed = ballSpeed();
+    std::vector<int> hp(bricks_.size());
+    auto resetWall = [&]() {
+        for (size_t i = 0; i < bricks_.size(); i++)
+            hp[i] = !bricks_[i].alive ? 0 : (bricks_[i].type == BRICK_STEEL ? -1 : bricks_[i].hp);
+    };
+    resetWall();
+    plan.land = simulateFlight(b.x, b.y, b.dx, b.dy, speed, hp, kAiHorizon);
+    if (!plan.land.lands) return;
+    // The wall as it will be when the ball arrives (this flight's damage).
+    std::vector<int> wallAtLanding = hp;
+
+    const float hw   = paddleHalfW();
+    const float lim  = kFieldHW - hw;
+    const float speedP = kPaddleSpeed;
+    const float ballY = kPaddleY - kPaddleHH - kBallR;
+    // The other balls' landings, to keep reachable after this hit.
+    float bestScore = -1e9f;
+    for (int k = 0; k < kAiOffsetCount; k++) {
+        float u = kAiOffsets[k];
+        float px = plan.land.x - u * hw;         // where the paddle must be
+        if (px > lim) px = lim;
+        if (px < -lim) px = -lim;
+        float uReal = (plan.land.x - px) / hw;   // the offset the clamp allows
+        if (fabsf(uReal) < kAiMinOffset) {       // pushed into the dead zone by the clamp
+            uReal = uReal < 0.0f ? -kAiMinOffset : kAiMinOffset;
+            px = plan.land.x - uReal * hw;
+            if (px > lim || px < -lim) continue;
+        }
+        // Reachable in time? The paddle slides at kPaddleSpeed.
+        float need = fabsf(px - paddleX_) - speedP * plan.land.t;
+        if (need > 0.0f) continue;
+        float rdx, rdy;
+        reboundDir(uReal, rdx, rdy);
+        hp = wallAtLanding;
+        Flight next = simulateFlight(plan.land.x, ballY, rdx, rdy, speed, hp, kAiHorizon);
+        // Damage per second of flight, the wall's height reached as a tie
+        // breaker (a trip that climbs high is a trip that will hit something
+        // next time), and a small preference for the middle of the paddle.
+        float score;
+        if (next.lands) {
+            score = (float)next.hits / (next.t + 0.4f) + (kPaddleY - next.minY) * 0.15f;
+            // The next landing must be reachable from this paddle position;
+            // otherwise the hit is a slow way to lose the ball.
+            float gap = fabsf(next.x - px) - hw * kAiCatchSlack - speedP * next.t;
+            if (gap > 0.0f) score -= 10.0f + gap;
+            // Other balls in play land too: a hit that strands them is bad.
+            for (size_t j = 0; j < aiPlans_.size(); j++) {
+                if ((int)j == ballIndex || !aiPlans_[j].valid || !aiPlans_[j].land.lands) continue;
+                const Flight& o = aiPlans_[j].land;
+                float after = o.t - aiPlans_[j].age - plan.land.t;
+                if (after <= 0.0f) continue;
+                float g = fabsf(o.x - px) - hw * kAiCatchSlack - speedP * after;
+                if (g > 0.0f) score -= 3.0f;
+            }
+        } else {
+            // Still up there after the horizon: busy breaking bricks, or
+            // stuck. Reward the damage, mildly.
+            score = (float)next.hits / kAiHorizon + (kPaddleY - next.minY) * 0.15f;
+        }
+        if (next.hits == 0) {
+            // A trip that hits nothing. When the last bricks are off in a
+            // corner, no single rebound reaches them: look one trip further
+            // — from where this rebound comes down, which second rebound
+            // hits something, and how soon. Taking a dead trip without
+            // looking ahead sent the ball up the same empty lane for
+            // minutes.
+            float best2 = 0.0f;
+            if (next.lands) {
+                float px2 = next.x;   // the paddle will be under it; offsets from there
+                for (int k2 = 0; k2 < kAiOffsetCount; k2++) {
+                    float u2 = kAiOffsets[k2];
+                    float p2 = next.x - u2 * hw;
+                    if (p2 > lim || p2 < -lim) continue;
+                    if (fabsf(p2 - px2) > speedP * next.t) continue;   // not reachable in time
+                    float d2x, d2y;
+                    reboundDir(u2, d2x, d2y);
+                    std::vector<int> hp2 = hp;
+                    Flight two = simulateFlight(next.x, ballY, d2x, d2y, speed, hp2, kAiHorizon);
+                    if (two.hits == 0) continue;
+                    float s2 = (float)two.hits / (next.t + (two.lands ? two.t : kAiHorizon) + 0.4f);
+                    if (s2 > best2) best2 = s2;
+                }
+            }
+            score += 0.8f * best2 + 0.10f * fabsf(next.x - plan.land.x) + 0.05f * fabsf(uReal);
+        } else {
+            score -= 0.02f * fabsf(uReal);
+        }
+        if (score > bestScore) { bestScore = score; plan.u = uReal; }
+    }
+    if (bestScore <= -1e8f) {
+        // Nothing reachable in time: head for the landing anyway, the
+        // nearest tip first.
+        plan.u = plan.land.x > paddleX_ ? -kAiCatchSlack : kAiCatchSlack;
+    }
+}
+
+void Game::updateAutoPlay(float dt) {
+    // A ball on the paddle: launch it the moment the serve delay is over.
+    if (ballHeld_) {
+        aiLaunch_ = true;
+        aiPlans_.clear();
+    }
+
+    // Keep one plan per ball; redo a plan when its ball changed direction.
+    if (aiPlans_.size() != balls_.size()) aiPlans_.assign(balls_.size(), Plan());
+    for (size_t i = 0; i < balls_.size(); i++) {
+        const Ball& b = balls_[i];
+        Plan& p = aiPlans_[i];
+        if (!b.alive || ballHeld_) { p.valid = false; continue; }
+        if (p.valid && p.dx == b.dx && p.dy == b.dy) { p.age += dt; continue; }
+        makePlan(p, b, (int)i);
+    }
+
+    // The primary ball: the one that comes down first and can still be
+    // caught. A ball that is already out of reach is written off.
+    const float hw  = paddleHalfW();
+    const float lim = kFieldHW - hw;
+    const float speedP = kPaddleSpeed;
+    int primary = -1;
+    float primaryT = 1e9f;
+    for (size_t i = 0; i < aiPlans_.size(); i++) {
+        const Plan& p = aiPlans_[i];
+        if (!p.valid || !p.land.lands) continue;
+        float t = p.land.t - p.age;
+        if (t < 0.0f) t = 0.0f;
+        float px = p.land.x - p.u * hw;
+        if (px > lim) px = lim;
+        if (px < -lim) px = -lim;
+        bool catchable = fabsf(px - paddleX_) - speedP * t <= hw * (1.0f - kAiCatchSlack) + 0.02f;
+        if (!catchable) continue;
+        if (t < primaryT) { primaryT = t; primary = (int)i; }
+    }
+    if (primary < 0) {
+        // Nothing catchable: chase the soonest landing regardless.
+        for (size_t i = 0; i < aiPlans_.size(); i++) {
+            const Plan& p = aiPlans_[i];
+            if (!p.valid || !p.land.lands) continue;
+            float t = p.land.t - p.age;
+            if (t < primaryT) { primaryT = t; primary = (int)i; }
+        }
+    }
+
+    float desiredX = paddleX_;
+    bool  haveTarget = false;
+    if (primary >= 0) {
+        const Plan& p = aiPlans_[primary];
+        aiLanding_ = p.land;
+        aiLanding_.t = primaryT;
+        aiPlanU_ = p.u;
+        desiredX = p.land.x - p.u * hw;
+        haveTarget = true;
+    } else {
+        aiLanding_ = Flight();
+        aiPlanU_ = 0.0f;
+    }
+
+    // Bonus capsules: worth a detour when the paddle can be under the
+    // capsule as it crosses the paddle line and still be back under the
+    // ball in time. The most valuable reachable one wins; a bonus already
+    // running with plenty of time left is not worth the walk.
+    const PowerUp* collect = nullptr;
+    int collectValue = -1;
+    for (auto& pu : powerUps_) {
+        if (!pu.alive) continue;
+        float tp = (kPaddleY - pu.y) / pu.vy;        // centre reaches the paddle line
+        if (tp < -0.25f) continue;                   // already past
+        if (tp < 0.0f) tp = 0.0f;
+        int value;
+        switch (pu.type) {
+            case PU_LIFE:  value = 4; break;
+            case PU_MULTI: value = 3; break;
+            case PU_SLOW:  value = slowTimer_ > 3.0f ? 0 : 2; break;
+            default:       value = wideTimer_ > 3.0f ? 0 : 1; break;
+        }
+        if (value == 0) continue;
+        float px = pu.x;
+        if (px > lim) px = lim;
+        if (px < -lim) px = -lim;
+        // Get there before the capsule leaves the paddle band...
+        float leave = tp + (kPaddleHH + kPowerUpR) / pu.vy;
+        if (fabsf(px - paddleX_) > speedP * leave) continue;
+        // ...and back under the ball in time for its landing.
+        if (haveTarget) {
+            float back = primaryT - tp;
+            if (back < 0.0f) continue;               // the ball comes first
+            if (fabsf(desiredX - px) - hw * (1.0f - kAiCatchSlack) > speedP * back) continue;
+        }
+        if (value > collectValue) { collectValue = value; collect = &pu; }
+    }
+
+    if (collect) {
+        aiTargetX_ = collect->x;
+        aiMove_ = true;
+    } else if (haveTarget) {
+        aiTargetX_ = desiredX;
+        aiMove_ = true;
+    } else if (ballHeld_) {
+        aiTargetX_ = paddleX_;
+        aiMove_ = true;
+    }
 }
 
 
@@ -1211,6 +1529,8 @@ void Game::drawSettingsScreen(std::vector<DrawCmd>& out) const {
 
     label("SOUND", kSettingSoundY);
     chip(soundEnabled_, kSettingSoundY);
+    label("AUTO PLAY", kSettingAutoPlayY);
+    chip(autoPlayActive_, kSettingAutoPlayY);
 
     // Back button
     emit(out, SHAPE_QUAD, 0.0f, kSettingBackY, 0.16f, 0.062f, 0.0f, 0.22f, 0.22f, 0.25f, 0.82f);
@@ -1346,7 +1666,16 @@ void Game::render(std::vector<DrawCmd>& out) {
     if (state_ == TITLE || state_ == GAME_OVER || state_ == WIN) {
         ShakeOff noShake(shakeX_, shakeY_);
         float gearA = 0.55f + 0.12f * sinf(animTime_ * 2.0f);
-        drawGearIcon(out, kGearWX, kGearWY, 0.055f, 0.55f, 0.62f, 0.78f, gearA);
+        float gr = autoPlayActive_ ? 0.25f : 0.55f;
+        float gg = autoPlayActive_ ? 1.00f : 0.62f;
+        float gb = autoPlayActive_ ? 0.35f : 0.78f;
+        drawGearIcon(out, kGearWX, kGearWY, 0.055f, gr, gg, gb, gearA);
+    }
+    // While the autopilot drives, a small pulsing AUTO badge sits at the top.
+    if (autoPlayActive_ && (scene == PLAYING || scene == LEVEL_CLEAR)) {
+        ShakeOff noShake(shakeX_, shakeY_);
+        float autoA = 0.38f + 0.28f * sinf(animTime_ * 3.5f);
+        drawText(out, "AUTO", 0.0f, -0.935f, 0.030f, 0.25f, 1.00f, 0.38f, autoA);
     }
 
     // ── Settings overlay — drawn last so it covers everything ────────────────

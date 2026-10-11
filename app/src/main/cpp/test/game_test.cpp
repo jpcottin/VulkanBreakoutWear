@@ -821,6 +821,19 @@ TEST(Settings, SoundRowToggles) {
     EXPECT_TRUE(g.soundEnabledForTest());
 }
 
+TEST(Settings, AutoPlayRowToggles) {
+    Game g;
+    g.setViewport(kW, kH);
+    openSettings(g);
+    ASSERT_FALSE(g.autoPlayActiveForTest());
+    tap(g, pxOf(0.0f), pyOf(0.08f));            // auto play row
+    g.update(0.016f);
+    EXPECT_TRUE(g.autoPlayActiveForTest());
+    tap(g, pxOf(0.0f), pyOf(0.08f));
+    g.update(0.016f);
+    EXPECT_FALSE(g.autoPlayActiveForTest());
+}
+
 TEST(Settings, BackReturnsToPreviousState) {
     Game g;
     g.setViewport(kW, kH);
@@ -852,15 +865,234 @@ TEST(Settings, PersistAcrossInstances) {
         openSettings(g);
         tap(g, pxOf(0.0f), pyOf(-0.22f));       // sound off
         g.update(0.016f);
+        tap(g, pxOf(0.0f), pyOf(0.08f));        // auto play on
+        g.update(0.016f);
         ASSERT_FALSE(g.soundEnabledForTest());
+        ASSERT_TRUE(g.autoPlayActiveForTest());
     }
     {
         Game g;
         g.setViewport(kW, kH);
         g.setDataPath(dir);
         EXPECT_FALSE(g.soundEnabledForTest());
+        EXPECT_TRUE(g.autoPlayActiveForTest());
     }
     remove(path);
+}
+
+// ── Auto Play ────────────────────────────────────────────────────────────────
+
+TEST(AutoPlay, LaunchesTheHeldBallAfterTheGrace) {
+    Game g;
+    startPlaying(g);
+    g.setAutoPlayForTest(true);
+    step(g, 0.3f);
+    EXPECT_TRUE(g.ballHeldForTest());            // the grace is respected
+    step(g, 0.4f);
+    EXPECT_FALSE(g.ballHeldForTest());           // and it does not wait for the self-launch
+}
+
+TEST(AutoPlay, PredictsWhereTheBallLands) {
+    Game g;
+    startPlaying(g);
+    g.setAutoPlayForTest(true);
+    int keep = slot(g, 2, 0);                     // one brick stays, far from the ball's path
+    for (int i = 0; i < g.brickTotalForTest(); i++)
+        if (i != keep) g.killBrickForTest(i);
+    g.setBallForTest(-0.30f, 0.15f, 0.6f, 1.0f);  // falling to the right, nothing in the way
+    g.update(1.0f / 60.0f);
+    ASSERT_TRUE(g.aiHasLandingForTest());
+    float predictedX = g.aiLandingXForTest();
+    float predictedT = g.aiLandingTForTest();
+    // Let it fall with the paddle parked out of the way and see where it was
+    // when it crossed the paddle line.
+    g.setAutoPlayForTest(false);
+    float actualX = 0.0f, actualT = 0.0f;
+    for (int i = 0; i < 300; i++) {
+        g.setPaddleXForTest(-0.50f);              // far left, away from the ball
+        g.update(1.0f / 60.0f);
+        actualT += 1.0f / 60.0f;
+        if (g.ballCount() == 0 || g.ballYForTest(0) + kBallR >= kPaddleY - 0.025f) {
+            actualX = g.ballCount() ? g.ballXForTest(0) : actualX;
+            break;
+        }
+        actualX = g.ballXForTest(0);
+    }
+    EXPECT_NEAR(predictedX, actualX, 0.04f);
+    EXPECT_NEAR(predictedT, actualT, 0.10f);
+}
+
+TEST(AutoPlay, GoesUnderTheBall) {
+    Game g;
+    startPlaying(g);
+    g.setAutoPlayForTest(true);
+    g.setBallForTest(0.35f, 0.20f, 0.0f, 1.0f);   // dropping straight down at x 0.35
+    g.update(1.0f / 60.0f);
+    ASSERT_TRUE(g.aiHasTargetForTest());
+    EXPECT_NEAR(g.aiTargetXForTest(), 0.35f, kPaddleHW);
+    step(g, 1.0f);
+    EXPECT_EQ(g.lives(), 5);
+    EXPECT_GE(g.paddleHitsForTest(), 1);
+}
+
+TEST(AutoPlay, CatchesABallComingOffTheWall) {
+    Game g;
+    startPlaying(g);
+    g.setAutoPlayForTest(true);
+    g.setBallForTest(0.50f, 0.30f, 1.0f, 0.5f);   // heading for the right wall, then back
+    g.update(1.0f / 60.0f);
+    ASSERT_TRUE(g.aiHasLandingForTest());
+    EXPECT_LT(g.aiLandingXForTest(), 0.50f);      // it comes down left of where it is now
+    step(g, 1.5f);
+    EXPECT_EQ(g.lives(), 5);
+    EXPECT_GE(g.paddleHitsForTest(), 1);
+}
+
+TEST(AutoPlay, AimsTheReboundAtTheLastBrick) {
+    Game g;
+    startPlaying(g);
+    g.setAutoPlayForTest(true);
+    // One brick left, far to the left; the ball drops straight down on the
+    // right. The plan takes it off-centre so a rebound reaches the brick —
+    // within a couple of trips, not by luck.
+    int keep = slot(g, 2, 0);
+    for (int i = 0; i < g.brickTotalForTest(); i++)
+        if (i != keep) g.killBrickForTest(i);
+    g.setBallForTest(0.40f, 0.15f, 0.0f, 1.0f);
+    g.update(1.0f / 60.0f);
+    ASSERT_TRUE(g.aiHasLandingForTest());
+    EXPECT_NE(g.aiTargetXForTest(), 0.40f);       // not a centre hit
+    for (int i = 0; i < 60 * 12 && g.isPlayingForTest(); i++) g.update(1.0f / 60.0f);
+    EXPECT_TRUE(g.isLevelClearForTest()) << "the last brick is still up after 12 s";
+    EXPECT_EQ(g.lives(), 5);
+}
+
+TEST(AutoPlay, NeverPlansADeadCentreHit) {
+    // |u| < 0.12 all leave at the 8-degree minimum, left or right by the sign
+    // of a hair's width of paddle placement: the plan never lives there.
+    Game g;
+    startPlaying(g);
+    g.setAutoPlayForTest(true);
+    for (int i = 0; i < 20; i++) {
+        g.setBallForTest(-0.45f + 0.045f * (float)i, 0.15f, 0.0f, 1.0f);
+        g.update(1.0f / 60.0f);
+        ASSERT_TRUE(g.aiHasLandingForTest());
+        EXPECT_GE(fabsf(g.aiPlanUForTest()), 0.15f) << "ball " << i;
+    }
+}
+
+TEST(AutoPlay, CollectsACapsuleItCanReachInTime) {
+    Game g;
+    startPlaying(g);
+    g.setAutoPlayForTest(true);
+    g.setBallForTest(0.0f, 0.10f, 0.0f, -1.0f);   // the ball is on its way up: time to spare
+    g.spawnTestPowerUp(0.35f, 0.30f, (int)Game::PU_LIFE);
+    g.update(1.0f / 60.0f);
+    ASSERT_TRUE(g.aiHasTargetForTest());
+    EXPECT_NEAR(g.aiTargetXForTest(), 0.35f, 0.02f);
+    step(g, 1.0f);
+    EXPECT_EQ(g.lives(), 6);
+}
+
+TEST(AutoPlay, LeavesACapsuleTheBallDoesNotAllow) {
+    Game g;
+    startPlaying(g);
+    g.setAutoPlayForTest(true);
+    // The ball lands on the left in a third of a second; a capsule on the
+    // far right would cost the ball. Catch the ball.
+    g.setBallForTest(-0.45f, 0.35f, 0.0f, 1.0f);
+    g.spawnTestPowerUp(0.48f, 0.45f, (int)Game::PU_WIDE);
+    g.update(1.0f / 60.0f);
+    ASSERT_TRUE(g.aiHasTargetForTest());
+    EXPECT_LT(g.aiTargetXForTest(), 0.0f);
+    step(g, 1.0f);
+    EXPECT_EQ(g.lives(), 5);
+}
+
+TEST(AutoPlay, SkipsAWideCapsuleWhileWideWithTimeLeft) {
+    Game g;
+    startPlaying(g);
+    g.setAutoPlayForTest(true);
+    g.activatePowerUpForTest((int)Game::PU_WIDE);
+    g.setBallForTest(0.0f, 0.10f, 0.0f, -1.0f);
+    g.spawnTestPowerUp(0.35f, 0.30f, (int)Game::PU_WIDE);
+    g.update(1.0f / 60.0f);
+    ASSERT_TRUE(g.aiHasTargetForTest());
+    EXPECT_GT(fabsf(g.aiTargetXForTest() - 0.35f), 0.05f);
+    // An extra life in the same spot is always worth it.
+    Game h;
+    startPlaying(h);
+    h.setAutoPlayForTest(true);
+    h.activatePowerUpForTest((int)Game::PU_WIDE);
+    h.setBallForTest(0.0f, 0.10f, 0.0f, -1.0f);
+    h.spawnTestPowerUp(0.35f, 0.30f, (int)Game::PU_LIFE);
+    h.update(1.0f / 60.0f);
+    ASSERT_TRUE(h.aiHasTargetForTest());
+    EXPECT_NEAR(h.aiTargetXForTest(), 0.35f, 0.02f);
+}
+
+TEST(AutoPlay, SavesTheBallThatComesDownFirst) {
+    Game g;
+    startPlaying(g);
+    g.setAutoPlayForTest(true);
+    g.setBallForTest(-0.40f, 0.40f, 0.0f, 1.0f);   // this one lands in a quarter second
+    g.addBallForTest(0.40f, -0.40f, 0.0f, 1.0f);   // this one takes over a second
+    g.update(1.0f / 60.0f);
+    ASSERT_TRUE(g.aiHasTargetForTest());
+    EXPECT_LT(g.aiTargetXForTest(), 0.0f);
+}
+
+TEST(AutoPlay, ReplansWhenTheBallBounces) {
+    Game g;
+    startPlaying(g);
+    g.setAutoPlayForTest(true);
+    g.setBallForTest(0.45f, 0.30f, 1.0f, 0.3f);    // about to hit the right wall
+    g.update(1.0f / 60.0f);
+    float before = g.aiLandingXForTest();
+    step(g, 0.5f);                                 // bounced: new direction, new plan
+    ASSERT_TRUE(g.aiHasLandingForTest());
+    EXPECT_NEAR(g.aiLandingXForTest(), before, 0.05f);   // same landing, re-derived
+    EXPECT_LT(g.ballDxForTest(0), 0.0f);
+}
+
+TEST(AutoPlay, DrivesThePaddleLikeTheCrownDoes) {
+    // The autopilot writes the same paddle target the crown writes: no
+    // second control path, and a crown turn mid-round is simply overridden
+    // on the next frame.
+    Game g;
+    startPlaying(g);
+    g.setAutoPlayForTest(true);
+    g.setBallForTest(0.40f, 0.20f, 0.0f, 1.0f);
+    g.update(1.0f / 60.0f);
+    EXPECT_NEAR(g.paddleTargetForTest(), g.aiTargetXForTest(), 1e-5f);
+}
+
+TEST(AutoPlay, ClearsLevelOneWithoutLosingABall) {
+    for (uint32_t seed = 1; seed <= 4; seed++) {
+        Game g;
+        g.setViewport(kW, kH);
+        g.seedRng(seed * 0x9E3779B9u);
+        g.triggerNewGameForTest();
+        g.setAutoPlayForTest(true);
+        for (int i = 0; i < 60 * 120 && g.isPlayingForTest(); i++)
+            g.update(1.0f / 60.0f);
+        EXPECT_TRUE(g.isLevelClearForTest()) << "seed " << seed << ": bricks left "
+                                              << g.breakableLeftForTest();
+        EXPECT_EQ(g.lives(), 5) << "seed " << seed;
+    }
+}
+
+TEST(AutoPlay, HandlesMultiBall) {
+    Game g;
+    g.setViewport(kW, kH);
+    g.startLevelForTest(3);
+    g.setAutoPlayForTest(true);
+    step(g, 1.0f);                                 // launched
+    g.activatePowerUpForTest((int)Game::PU_MULTI);
+    ASSERT_EQ(g.ballCount(), 3);
+    int lives = g.lives();
+    for (int i = 0; i < 60 * 20 && g.isPlayingForTest(); i++) g.update(1.0f / 60.0f);
+    EXPECT_GE(g.lives(), lives);                   // three balls up, none of them cost a life
 }
 
 // ── Title demo ───────────────────────────────────────────────────────────────
