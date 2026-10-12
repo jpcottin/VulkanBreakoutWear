@@ -226,7 +226,9 @@ the bench's 8-minute cap, not a game over.
 
 Launches the `NativeActivity` on a connected watch or emulator, waits for the
 renderer to present its first frame, asserts the activity is still `RESUMED`,
-and captures a screenshot:
+then starts a round with Auto Play switched on and screenshots it every two
+seconds. The screenshots land in `/data/local/tmp/smoke/` on the device
+(`00-title.png`, then `01-autoplay.png` to `08-autoplay.png`):
 
 ```bash
 ./gradlew connectedAndroidTest
@@ -235,15 +237,16 @@ and captures a screenshot:
 ## CI/CD
 
 GitHub Actions runs on every push and pull request to `main`; every job gates
-merges.
+merges except the preview-emulator leg.
 
 | Job | What it does | Artifacts |
 |-----|-------------|-----------|
 | **Build APK** | Compiles the debug APK | `debug-apk` |
 | **Host tests** | Builds `game.cpp` and the Google Test suite with the host compiler and runs it | — |
 | **Auto Play bench** | Builds `game.cpp` on the host and plays 100 seeded campaigns with the autopilot; fails when fewer than 95% are won | — |
-| **Native Tests** | Runs the same 81 Google Test cases on x86\_64 Wear OS emulators (API 33 + API 34, `wearos_large_round`) | — |
-| **Smoke Test** | Runs the Android instrumented test on the same Wear OS emulators and captures an in-game screenshot. The test asserts the activity is RESUMED **and** that the renderer logged `First frame presented`, so a dead Vulkan path fails loudly | `smoke-screenshot-api*`, `smoke-test-results-api*`, `smoke-logcat-api*` |
+| **Native Tests** | Runs the same 81 Google Test cases on x86\_64 Wear OS emulators (API 33, 34 and 36, `wearos_large_round`) | — |
+| **Smoke Test** | Runs the Android instrumented test on the same Wear OS emulators: it asserts the activity is RESUMED **and** that the renderer logged `First frame presented`, so a dead Vulkan path fails loudly, then plays a round under Auto Play and uploads the screenshot series | `smoke-screenshots-api*`, `smoke-test-results-api*`, `smoke-logcat-api*` |
+| **Smoke Test, preview emulator** | The same smoke test on the Wear OS 7.0 (API 37.0) image, on the preview emulator line (`emulators/latest`, installed with the Android CLI). Non-blocking: that image's Mesa driver cannot open a render node on today's emulators, so this leg is the canary that turns green the day it can | `smoke-screenshots-api37-preview`, `smoke-test-results-api37-preview`, `smoke-logs-api37-preview` |
 
 ## License
 
