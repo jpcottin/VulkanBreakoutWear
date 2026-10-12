@@ -132,11 +132,11 @@ adb shell am start -n com.jpcottin.vulkanbreakoutwear/android.app.NativeActivity
 ```
 
 Requires a Wear OS device with a Vulkan driver. On the emulator use a Wear OS
-4 or 5 image (API 33 to 35, `android-wear`); the newer API 36 and 37 images
-(`android-wear-signed`) ship a Mesa-based Vulkan driver that cannot create an
-instance on the current emulator (it looks for a virtio-gpu render node the
-emulator does not expose), so the game exits at once with "Vulkan unavailable"
-there. The APK ships `armeabi-v7a`, `arm64-v8a` and `x86_64` libraries: the
+4, 5 or 6 image (API 33 to 36): the Wear OS 6 image (`android-wear-signed`)
+renders through Mesa's llvmpipe software driver. The Wear OS 7 image (API 37)
+ships a Mesa driver that looks for a virtio-gpu render node the emulator does
+not expose, so `vkCreateInstance` fails whatever the host `-gpu` mode and the
+game exits at once with "Vulkan unavailable" there. The APK ships `armeabi-v7a`, `arm64-v8a` and `x86_64` libraries: the
 Pixel Watch line runs a 32-bit userspace (`armeabi-v7a` only), and an APK
 without it is refused with `INSTALL_FAILED_NO_MATCHING_ABIS`.
 On the emulator the crown is the rotary input in the extended controls; from
