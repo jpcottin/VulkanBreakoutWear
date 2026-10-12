@@ -290,14 +290,20 @@ jobs:
             system-images/android-37.0/android-wear-signed/x86_64
           android sdk list | grep -E 'emulators/latest|android-37.0' || true
 
+      # The AVD's directory is wherever this runner's avdmanager puts it (it
+      # is not always $HOME/.android/avd), so ask it rather than assume.
       - name: Create the Wear OS 7.0 AVD
         run: |
+          set -o pipefail
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          echo no | "$SDK/cmdline-tools/latest/bin/avdmanager" create avd -n wear37 \
+          AVDMANAGER="$SDK/cmdline-tools/latest/bin/avdmanager"
+          echo no | "$AVDMANAGER" create avd -n wear37 \
             -k "system-images;android-37.0;android-wear-signed;x86_64" -d wearos_large_round
-          CFG="$HOME/.android/avd/wear37.avd/config.ini"
-          sed -i 's/^hw.gpu.enabled=no/hw.gpu.enabled=yes/' "$CFG"
-          cat "$CFG"
+          AVD_DIR="$("$AVDMANAGER" list avd 2>/dev/null | awk -F': ' '/Name: wear37/{f=1} f && /Path:/{print $2; exit}')"
+          echo "AVD directory: $AVD_DIR"
+          test -f "$AVD_DIR/config.ini"
+          sed -i 's/^hw.gpu.enabled=no/hw.gpu.enabled=yes/' "$AVD_DIR/config.ini"
+          cat "$AVD_DIR/config.ini"
 
       - name: Boot the preview emulator
         timeout-minutes: 15
