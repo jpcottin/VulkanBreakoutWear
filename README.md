@@ -132,11 +132,14 @@ adb shell am start -n com.jpcottin.vulkanbreakoutwear/android.app.NativeActivity
 ```
 
 Requires a Wear OS device with a Vulkan driver. On the emulator use a Wear OS
-4, 5 or 6 image (API 33 to 36): the Wear OS 6 image (`android-wear-signed`)
-renders through Mesa's llvmpipe software driver. The Wear OS 7 image (API 37)
-ships a Mesa driver that looks for a virtio-gpu render node the emulator does
-not expose, so `vkCreateInstance` fails whatever the host `-gpu` mode and the
-game exits at once with "Vulkan unavailable" there. The APK ships `armeabi-v7a`, `arm64-v8a` and `x86_64` libraries: the
+4, 5, 6 or 7 image (API 33 to 37): the signed Wear OS 6 and 7 images
+(`android-wear-signed`) render through Mesa onto the host's llvmpipe software
+driver. The Wear OS 7 image (API 37) needs one extra flag: its Mesa driver
+opens a virtio-gpu render node, which the emulator only creates with
+`-feature VirtioGpuNativeSync`. Without it `vkCreateInstance` fails whatever
+the `-gpu` mode and the game exits at once with "Vulkan unavailable". The
+preview emulator line (`emulators/latest`, started with `-qemu-top-dir`
+pointing at itself) exposes the render node by default. The APK ships `armeabi-v7a`, `arm64-v8a` and `x86_64` libraries: the
 Pixel Watch line runs a 32-bit userspace (`armeabi-v7a` only), and an APK
 without it is refused with `INSTALL_FAILED_NO_MATCHING_ABIS`.
 On the emulator the crown is the rotary input in the extended controls; from
@@ -244,9 +247,9 @@ merges except the preview-emulator leg.
 | **Build APK** | Compiles the debug APK | `debug-apk` |
 | **Host tests** | Builds `game.cpp` and the Google Test suite with the host compiler and runs it | — |
 | **Auto Play bench** | Builds `game.cpp` on the host and plays 100 seeded campaigns with the autopilot; fails when fewer than 95% are won | — |
-| **Native Tests** | Runs the same 81 Google Test cases on x86\_64 Wear OS emulators (API 33, 34 and 36, `wearos_large_round`) | — |
+| **Native Tests** | Runs the same 81 Google Test cases on x86\_64 Wear OS emulators (API 33, 34, 36 and 37.0, `wearos_large_round`) | — |
 | **Smoke Test** | Runs the Android instrumented test on the same Wear OS emulators: it asserts the activity is RESUMED **and** that the renderer logged `First frame presented`, so a dead Vulkan path fails loudly, then plays a round under Auto Play and uploads the screenshot series | `smoke-screenshots-api*`, `smoke-test-results-api*`, `smoke-logcat-api*` |
-| **Smoke Test, preview emulator** | The same smoke test on the Wear OS 7.0 (API 37.0) image, on the preview emulator line (`emulators/latest`, installed with the Android CLI). Non-blocking: that image's Mesa driver cannot open a render node on today's emulators, so this leg is the canary that turns green the day it can | `smoke-screenshots-api37-preview`, `smoke-test-results-api37-preview`, `smoke-logs-api37-preview` |
+| **Smoke Test, preview emulator** | The same smoke test on the Wear OS 7.0 (API 37.0) image, on the preview emulator line (`emulators/latest`, installed with the Android CLI, run on its own bundled QEMU). Non-blocking: it is a preview engine, so this leg is an early warning rather than a gate | `smoke-screenshots-api37-preview`, `smoke-test-results-api37-preview`, `smoke-logs-api37-preview` |
 
 ## License
 

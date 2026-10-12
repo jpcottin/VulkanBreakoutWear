@@ -51,14 +51,21 @@ jobs:
           # Wear OS 4 and 5 images carry the android-wear tag; Wear OS 6 and
           # later are android-wear-signed. The API 36 image renders through
           # Mesa llvmpipe. The API 37 image's Mesa driver needs a virtio-gpu
-          # render node the emulator does not expose, so vkCreateInstance
-          # fails there whatever the host -gpu mode: it stays out.
+          # render node, which the emulator only exposes with its
+          # VirtioGpuNativeSync feature forced on (off by default on the host
+          # side): without it vkCreateInstance fails whatever the -gpu mode.
           - api-level: 33
             target: android-wear
+            features: ''
           - api-level: 34
             target: android-wear
+            features: ''
           - api-level: 36
             target: android-wear-signed
+            features: ''
+          - api-level: 37.0
+            target: android-wear-signed
+            features: -feature VirtioGpuNativeSync
 
     steps:
       - uses: actions/checkout@v6
@@ -83,6 +90,19 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # Same reason as in the smoke job: the runner's avdmanager writes
+      # target=android-0 for minor-versioned packages such as android-37.0.
+      - name: Update SDK cmdline-tools
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "cmdline-tools;latest" > /dev/null
+          # sdkmanager won't overwrite the preinstalled dir; it installs to latest-2.
+          if [ -d "$SDK/cmdline-tools/latest-2" ]; then
+            rm -rf "$SDK/cmdline-tools/latest"
+            mv "$SDK/cmdline-tools/latest-2" "$SDK/cmdline-tools/latest"
+          fi
+          "$SDK/cmdline-tools/latest/bin/avdmanager" list device > /dev/null
+
       - name: Run native tests on a Wear OS emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -90,7 +110,7 @@ jobs:
           arch: x86_64
           target: ${{ matrix.target }}
           profile: wearos_large_round
-          emulator-options: -no-window -gpu auto -noaudio -no-boot-anim -verbose -show-kernel -debug-metrics -metrics-collection
+          emulator-options: -no-window -gpu auto -noaudio -no-boot-anim -verbose -show-kernel -debug-metrics -metrics-collection ${{ matrix.features }}
           disable-animations: true
           emulator-boot-timeout: 900
           script: ./gradlew runNativeTests -PtestAbi=x86_64 --no-daemon
@@ -141,10 +161,16 @@ jobs:
           # Same images as the native-test matrix; see the note there.
           - api-level: '33'
             target: android-wear
+            features: ''
           - api-level: '34'
             target: android-wear
+            features: ''
           - api-level: '36'
             target: android-wear-signed
+            features: ''
+          - api-level: '37.0'
+            target: android-wear-signed
+            features: -feature VirtioGpuNativeSync
 
     steps:
       - uses: actions/checkout@v6
@@ -191,7 +217,7 @@ jobs:
           arch: x86_64
           target: ${{ matrix.target }}
           profile: wearos_large_round
-          emulator-options: -no-window -gpu auto -noaudio -no-boot-anim -verbose -show-kernel -debug-metrics -metrics-collection
+          emulator-options: -no-window -gpu auto -noaudio -no-boot-anim -verbose -show-kernel -debug-metrics -metrics-collection ${{ matrix.features }}
           disable-animations: true
           emulator-boot-timeout: 900
           script: |
@@ -230,12 +256,12 @@ jobs:
           if-no-files-found: warn
 
   # ── Preview emulator: Wear OS 7.0 (API 37.0), non-blocking ───────────────────
-  # The API 37 image's Mesa driver wants a virtio-gpu render node the stable
-  # emulator does not expose, so vkCreateInstance fails there whatever the host
-  # -gpu mode. This leg runs the same smoke test on the preview emulator line
-  # (the emulators/latest package, separate from the stable `emulator` package
-  # android-emulator-runner installs) so the day it gains the render node shows
-  # up here as a green run. continue-on-error: a red run here never blocks.
+  # The same smoke test on the preview emulator line (the emulators/latest
+  # package, separate from the stable `emulator` package that
+  # android-emulator-runner installs). Its bundled QEMU drives the guest
+  # through a virtio-gpu-rutabaga device, the path the API 37 image's Mesa
+  # driver is built for, so this leg is the early warning for that engine.
+  # continue-on-error: it is a preview, a red run here never blocks.
   smoke-preview:
     name: Smoke Test (Wear OS API 37.0, preview emulator, non-blocking)
     runs-on: ubuntu-latest
@@ -320,10 +346,14 @@ jobs:
         timeout-minutes: 15
         run: |
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          EMU="$SDK/emulators/latest/emulator"
-          "$EMU" -version 2>&1 | head -3 || true
-          nohup "$EMU" -avd wear37 -no-window -gpu auto -noaudio -no-boot-anim -no-snapshot \
-            -verbose > emulator.log 2>&1 &
+          EMU_DIR="$SDK/emulators/latest"
+          "$EMU_DIR/emulator" -version 2>&1 | head -3 || true
+          # Without -qemu-top-dir the preview launcher runs the stable
+          # engine from $SDK/emulator; pointed at its own directory it runs
+          # its bundled QEMU, which exposes a virtio-gpu-rutabaga device and
+          # gives the API 37 image's Mesa driver the render node it needs.
+          nohup "$EMU_DIR/emulator" -avd wear37 -qemu-top-dir "$EMU_DIR" -fishtank-stdout \
+            -no-window -gpu auto -noaudio -no-boot-anim -no-snapshot -verbose > emulator.log 2>&1 &
           adb wait-for-device
           for _ in $(seq 1 120); do
             [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
