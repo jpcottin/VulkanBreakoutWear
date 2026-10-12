@@ -52,9 +52,7 @@ jobs:
           # images (android-wear-signed) ship a Mesa-based Vulkan driver that
           # cannot create an instance on the current emulator: no render node.
           - api-level: 33
-            gpu: swiftshader_indirect
           - api-level: 34
-            gpu: auto
 
     steps:
       - uses: actions/checkout@v6
@@ -86,7 +84,7 @@ jobs:
           arch: x86_64
           target: android-wear
           profile: wearos_large_round
-          emulator-options: -no-window -gpu ${{ matrix.gpu }} -noaudio -no-boot-anim -verbose -show-kernel -debug-metrics -metrics-collection
+          emulator-options: -no-window -gpu auto -noaudio -no-boot-anim -verbose -show-kernel -debug-metrics -metrics-collection
           disable-animations: true
           emulator-boot-timeout: 900
           script: ./gradlew runNativeTests -PtestAbi=x86_64 --no-daemon
@@ -135,9 +133,7 @@ jobs:
       matrix:
         include:
           - api-level: '33'
-            gpu: swiftshader_indirect
           - api-level: '34'
-            gpu: auto
 
     steps:
       - uses: actions/checkout@v6
@@ -184,7 +180,7 @@ jobs:
           arch: x86_64
           target: android-wear
           profile: wearos_large_round
-          emulator-options: -no-window -gpu ${{ matrix.gpu }} -noaudio -no-boot-anim -verbose -show-kernel -debug-metrics -metrics-collection
+          emulator-options: -no-window -gpu auto -noaudio -no-boot-anim -verbose -show-kernel -debug-metrics -metrics-collection
           disable-animations: true
           emulator-boot-timeout: 900
           script: |
