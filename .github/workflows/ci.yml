@@ -354,12 +354,19 @@ jobs:
           # gives the API 37 image's Mesa driver the render node it needs.
           nohup "$EMU_DIR/emulator" -avd wear37 -qemu-top-dir "$EMU_DIR" -fishtank-stdout \
             -no-window -gpu auto -noaudio -no-boot-anim -no-snapshot -verbose > emulator.log 2>&1 &
-          adb wait-for-device
-          for _ in $(seq 1 120); do
-            [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+          # Bounded waits: with no device, adb blocks forever and the step
+          # would only end at its timeout, with nothing in the log.
+          timeout 180 adb wait-for-device || true
+          for _ in $(seq 1 60); do
+            [ "$(timeout 20 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
             sleep 5
           done
-          adb shell getprop sys.boot_completed | grep -q 1
+          if [ "$(timeout 20 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != "1" ]; then
+            echo "::error::the preview emulator did not finish booting"
+            echo "===== adb devices ====="; timeout 20 adb devices || true
+            echo "===== emulator.log (tail) ====="; tail -80 emulator.log || true
+            exit 1
+          fi
           adb shell getprop ro.build.version.sdk
           adb shell settings put global window_animation_scale 0
           adb shell settings put global transition_animation_scale 0
@@ -372,9 +379,10 @@ jobs:
       - name: Collect screenshots and logs
         if: always()
         run: |
-          adb pull /data/local/tmp/smoke screenshots || true
+          # Bounded: after a failed boot there is no device and adb would hang.
+          timeout 120 adb pull /data/local/tmp/smoke screenshots || true
           ls -la screenshots || true
-          adb logcat -d BreakoutWear:V AndroidRuntime:E MESA:E *:S > logcat.txt || true
+          timeout 60 adb logcat -d BreakoutWear:V AndroidRuntime:E MESA:E *:S > logcat.txt || true
 
       - name: Upload test results
         if: always()
