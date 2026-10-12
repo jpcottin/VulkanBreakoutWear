@@ -289,6 +289,9 @@ jobs:
           android sdk install --canary emulators/latest platform-tools \
             system-images/android-37.0/android-wear-signed/x86_64
           android sdk list | grep -E 'emulators/latest|android-37.0' || true
+          # The runner's PATH does not carry platform-tools: adb is needed below.
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
 
       # The AVD's directory is wherever this runner's avdmanager puts it (it
       # is not always $HOME/.android/avd), so ask it rather than assume.
@@ -304,6 +307,14 @@ jobs:
           test -f "$AVD_DIR/config.ini"
           sed -i 's/^hw.gpu.enabled=no/hw.gpu.enabled=yes/' "$AVD_DIR/config.ini"
           cat "$AVD_DIR/config.ini"
+          # avdmanager wrote it under ~/.config/.android/avd; the preview
+          # emulator's launcher resolves ~/.android/avd. Tell it where to look,
+          # and link the classic location to the same place for good measure.
+          AVD_HOME="$(dirname "$AVD_DIR")"
+          echo "ANDROID_AVD_HOME=$AVD_HOME" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.android"
+          [ -e "$HOME/.android/avd" ] || ln -s "$AVD_HOME" "$HOME/.android/avd"
+          ls -la "$HOME/.android/avd/"
 
       - name: Boot the preview emulator
         timeout-minutes: 15
