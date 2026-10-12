@@ -342,6 +342,14 @@ jobs:
           [ -e "$HOME/.android/avd" ] || ln -s "$AVD_HOME" "$HOME/.android/avd"
           ls -la "$HOME/.android/avd/"
 
+      # The preview engine's QEMU links libpulse even with -noaudio, and the
+      # runner image does not ship it: without this it exits at once with
+      # "error while loading shared libraries: libpulse.so.0".
+      - name: Install the preview emulator's host libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libpulse0
+
       - name: Boot the preview emulator
         timeout-minutes: 15
         run: |
@@ -354,10 +362,12 @@ jobs:
           # gives the API 37 image's Mesa driver the render node it needs.
           nohup "$EMU_DIR/emulator" -avd wear37 -qemu-top-dir "$EMU_DIR" -fishtank-stdout \
             -no-window -gpu auto -noaudio -no-boot-anim -no-snapshot -verbose > emulator.log 2>&1 &
+          EMU_PID=$!
           # Bounded waits: with no device, adb blocks forever and the step
-          # would only end at its timeout, with nothing in the log.
-          timeout 180 adb wait-for-device || true
-          for _ in $(seq 1 60); do
+          # would only end at its timeout, with nothing in the log. And if
+          # the launcher dies there is nothing to wait for at all.
+          for _ in $(seq 1 100); do
+            kill -0 "$EMU_PID" 2>/dev/null || { echo "the emulator launcher exited"; break; }
             [ "$(timeout 20 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
             sleep 5
           done
