@@ -55,8 +55,9 @@ android {
             }
         }
         ndk {
-            // Emulator is x86_64; arm64-v8a covers physical watches.
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            // Emulator is x86_64. Pixel Watches run a 32-bit userspace
+            // (armeabi-v7a only); arm64-v8a covers 64-bit watches.
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")
         }
     }
 

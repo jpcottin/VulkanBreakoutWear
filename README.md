@@ -136,7 +136,9 @@ Requires a Wear OS device with a Vulkan driver. On the emulator use a Wear OS
 (`android-wear-signed`) ship a Mesa-based Vulkan driver that cannot create an
 instance on the current emulator (it looks for a virtio-gpu render node the
 emulator does not expose), so the game exits at once with "Vulkan unavailable"
-there.
+there. The APK ships `armeabi-v7a`, `arm64-v8a` and `x86_64` libraries: the
+Pixel Watch line runs a 32-bit userspace (`armeabi-v7a` only), and an APK
+without it is refused with `INSTALL_FAILED_NO_MATCHING_ABIS`.
 On the emulator the crown is the rotary input in the extended controls; from
 a shell, one detent is
 
