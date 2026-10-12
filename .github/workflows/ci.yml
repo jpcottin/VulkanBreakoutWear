@@ -48,11 +48,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Wear OS 4 and 5 images (tag android-wear). The newer API 36 and 37
-          # images (android-wear-signed) ship a Mesa-based Vulkan driver that
-          # cannot create an instance on the current emulator: no render node.
+          # Wear OS 4 and 5 images carry the android-wear tag; Wear OS 6 and
+          # later are android-wear-signed. The API 36 image renders through
+          # Mesa llvmpipe. The API 37 image's Mesa driver needs a virtio-gpu
+          # render node the emulator does not expose, so vkCreateInstance
+          # fails there whatever the host -gpu mode: it stays out.
           - api-level: 33
+            target: android-wear
           - api-level: 34
+            target: android-wear
+          - api-level: 36
+            target: android-wear-signed
 
     steps:
       - uses: actions/checkout@v6
@@ -82,7 +88,7 @@ jobs:
         with:
           api-level: ${{ matrix.api-level }}
           arch: x86_64
-          target: android-wear
+          target: ${{ matrix.target }}
           profile: wearos_large_round
           emulator-options: -no-window -gpu auto -noaudio -no-boot-anim -verbose -show-kernel -debug-metrics -metrics-collection
           disable-animations: true
@@ -132,8 +138,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Same images as the native-test matrix; see the note there.
           - api-level: '33'
+            target: android-wear
           - api-level: '34'
+            target: android-wear
+          - api-level: '36'
+            target: android-wear-signed
 
     steps:
       - uses: actions/checkout@v6
@@ -178,7 +189,7 @@ jobs:
         with:
           api-level: ${{ matrix.api-level }}
           arch: x86_64
-          target: android-wear
+          target: ${{ matrix.target }}
           profile: wearos_large_round
           emulator-options: -no-window -gpu auto -noaudio -no-boot-anim -verbose -show-kernel -debug-metrics -metrics-collection
           disable-animations: true
