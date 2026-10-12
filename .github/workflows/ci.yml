@@ -63,7 +63,7 @@ jobs:
           - api-level: 36
             target: android-wear-signed
             features: ''
-          - api-level: 37.0
+          - api-level: '37.0'
             target: android-wear-signed
             features: -feature VirtioGpuNativeSync
 
