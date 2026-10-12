@@ -61,6 +61,15 @@ class SmokeTest {
         // emulated battery for the round so the screenshots show the game.
         shell("dumpsys battery unplug")
 
+        // Wear OS turns the screen off after a few seconds and the input
+        // dispatcher then drops touches (the display's input viewport goes
+        // inactive, see below). "svc power stayon" only applies while
+        // charging, which the unplug above rules out, so stretch the
+        // screen-off timeout for the test and wake the display.
+        val previousTimeout = shell("settings get system screen_off_timeout").trim()
+        shell("settings put system screen_off_timeout 600000")
+        shell("input keyevent KEYCODE_WAKEUP")
+
         // Clear logcat BEFORE launching so the first-frame assertion can only be
         // satisfied by THIS launch — the buffer is boot-persistent, and a
         // "First frame presented" from an earlier run would mask a dead
@@ -105,6 +114,21 @@ class SmokeTest {
                     log.contains("First frame presented")
                 )
                 screenshot("00-title")
+
+                // On a headless emulator the display's input viewport can
+                // come up inactive (the preview engine's does): the input
+                // reader then keeps every touch device disabled and even
+                // injected taps never reach a window, while the game still
+                // renders into its composited surface. A sleep/wake cycle
+                // with the game up makes the reader reconfigure the touch
+                // device for display 0 ("mode DIRECT" in its log), after
+                // which taps land. Bring the game back to the front after.
+                shell("input keyevent KEYCODE_SLEEP")
+                Thread.sleep(3_000)
+                shell("input keyevent KEYCODE_WAKEUP")
+                Thread.sleep(3_000)
+                shell("am start -n ${context.packageName}/android.app.NativeActivity")
+                Thread.sleep(4_000)
 
                 // Right after boot a system window (the charging screen, a
                 // first-run overlay) can still be in front of the game and
@@ -159,6 +183,9 @@ class SmokeTest {
                 )
             }
         } finally {
+            if (previousTimeout.isNotEmpty() && previousTimeout != "null") {
+                shell("settings put system screen_off_timeout $previousTimeout")
+            }
             shell("dumpsys battery reset")
             if (previous != null) settings.writeBytes(previous) else settings.delete()
         }

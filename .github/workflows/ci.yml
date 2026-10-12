@@ -361,7 +361,7 @@ jobs:
           # its bundled QEMU, which exposes a virtio-gpu-rutabaga device and
           # gives the API 37 image's Mesa driver the render node it needs.
           nohup "$EMU_DIR/emulator" -avd wear37 -qemu-top-dir "$EMU_DIR" -fishtank-stdout \
-            -no-window -gpu auto -noaudio -no-boot-anim -no-snapshot -verbose > emulator.log 2>&1 &
+            -no-window -gpu lavapipe -noaudio -no-boot-anim -no-snapshot -verbose > emulator.log 2>&1 &
           EMU_PID=$!
           # Bounded waits: with no device, adb blocks forever and the step
           # would only end at its timeout, with nothing in the log. And if
