@@ -197,10 +197,12 @@ jobs:
           script: |
             adb wait-for-device
             ./gradlew connectedAndroidTest --no-daemon
-            # The screenshot was captured INSIDE the passing test (verified
-            # RESUMED + live swapchain) to /data/local/tmp, which survives the
-            # post-test uninstall — no unverified relaunch needed.
-            adb pull /data/local/tmp/smoke.png screenshot.png || true
+            # The screenshots were captured INSIDE the passing test (verified
+            # RESUMED + first frame presented, then a round under Auto Play) to
+            # /data/local/tmp/smoke/, which survives the post-test uninstall —
+            # no unverified relaunch needed.
+            adb pull /data/local/tmp/smoke screenshots || true
+            ls -la screenshots || true
             adb logcat -d BreakoutWear:V AndroidRuntime:E *:S > logcat.txt || true
 
       - name: Upload test results
@@ -211,12 +213,12 @@ jobs:
           path: app/build/outputs/androidTest-results/
           if-no-files-found: warn
 
-      - name: Upload screenshot
+      - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: smoke-screenshot-api${{ matrix.api-level }}
-          path: screenshot.png
+          name: smoke-screenshots-api${{ matrix.api-level }}
+          path: screenshots/
           if-no-files-found: warn
 
       - name: Upload logcat
@@ -225,4 +227,147 @@ jobs:
         with:
           name: smoke-logcat-api${{ matrix.api-level }}
           path: logcat.txt
+          if-no-files-found: warn
+
+  # ── Preview emulator: Wear OS 7.0 (API 37.0), non-blocking ───────────────────
+  # The API 37 image's Mesa driver wants a virtio-gpu render node the stable
+  # emulator does not expose, so vkCreateInstance fails there whatever the host
+  # -gpu mode. This leg runs the same smoke test on the preview emulator line
+  # (the emulators/latest package, separate from the stable `emulator` package
+  # android-emulator-runner installs) so the day it gains the render node shows
+  # up here as a green run. continue-on-error: a red run here never blocks.
+  smoke-preview:
+    name: Smoke Test (Wear OS API 37.0, preview emulator, non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: gradle
+
+      - name: Install NDK 29
+        run: |
+          set -o pipefail  # a failed sdkmanager must fail the step, not tail
+          echo "y" | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager \
+            "ndk;29.0.14206865" 2>&1 | tail -3
+
+      - name: Enable KVM for hardware-accelerated emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # Same reason as in the smoke job: the runner's avdmanager writes
+      # target=android-0 for minor-versioned packages such as android-37.0.
+      - name: Update SDK cmdline-tools
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "cmdline-tools;latest" > /dev/null
+          if [ -d "$SDK/cmdline-tools/latest-2" ]; then
+            rm -rf "$SDK/cmdline-tools/latest"
+            mv "$SDK/cmdline-tools/latest-2" "$SDK/cmdline-tools/latest"
+          fi
+
+      # The preview emulator is a canary package the Android CLI can install;
+      # sdkmanager lists it too, but the CLI is the tool Google documents for it.
+      - name: Install the Android CLI
+        run: |
+          curl -fsSL https://dl.google.com/android/cli/latest/linux_x86_64/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install the preview emulator and the Wear OS 7.0 image
+        run: |
+          android --version
+          android sdk install --canary emulators/latest platform-tools \
+            system-images/android-37.0/android-wear-signed/x86_64
+          android sdk list | grep -E 'emulators/latest|android-37.0' || true
+          # The runner's PATH does not carry platform-tools: adb is needed below.
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+
+      # The AVD's directory is wherever this runner's avdmanager puts it (it
+      # is not always $HOME/.android/avd), so ask it rather than assume.
+      - name: Create the Wear OS 7.0 AVD
+        run: |
+          set -o pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          AVDMANAGER="$SDK/cmdline-tools/latest/bin/avdmanager"
+          echo no | "$AVDMANAGER" create avd -n wear37 \
+            -k "system-images;android-37.0;android-wear-signed;x86_64" -d wearos_large_round
+          AVD_DIR="$("$AVDMANAGER" list avd 2>/dev/null | awk -F': ' '/Name: wear37/{f=1} f && /Path:/{print $2; exit}')"
+          echo "AVD directory: $AVD_DIR"
+          test -f "$AVD_DIR/config.ini"
+          sed -i 's/^hw.gpu.enabled=no/hw.gpu.enabled=yes/' "$AVD_DIR/config.ini"
+          cat "$AVD_DIR/config.ini"
+          # avdmanager wrote it under ~/.config/.android/avd; the preview
+          # emulator's launcher resolves ~/.android/avd. Tell it where to look,
+          # and link the classic location to the same place for good measure.
+          AVD_HOME="$(dirname "$AVD_DIR")"
+          echo "ANDROID_AVD_HOME=$AVD_HOME" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.android"
+          [ -e "$HOME/.android/avd" ] || ln -s "$AVD_HOME" "$HOME/.android/avd"
+          ls -la "$HOME/.android/avd/"
+
+      - name: Boot the preview emulator
+        timeout-minutes: 15
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          EMU="$SDK/emulators/latest/emulator"
+          "$EMU" -version 2>&1 | head -3 || true
+          nohup "$EMU" -avd wear37 -no-window -gpu auto -noaudio -no-boot-anim -no-snapshot \
+            -verbose > emulator.log 2>&1 &
+          adb wait-for-device
+          for _ in $(seq 1 120); do
+            [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+            sleep 5
+          done
+          adb shell getprop sys.boot_completed | grep -q 1
+          adb shell getprop ro.build.version.sdk
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          adb shell settings put global hide_error_dialogs 1 || true
+
+      - name: Run instrumented smoke test and capture screenshots
+        run: ./gradlew connectedAndroidTest --no-daemon
+
+      - name: Collect screenshots and logs
+        if: always()
+        run: |
+          adb pull /data/local/tmp/smoke screenshots || true
+          ls -la screenshots || true
+          adb logcat -d BreakoutWear:V AndroidRuntime:E MESA:E *:S > logcat.txt || true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-test-results-api37-preview
+          path: app/build/outputs/androidTest-results/
+          if-no-files-found: warn
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-screenshots-api37-preview
+          path: screenshots/
+          if-no-files-found: warn
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-logs-api37-preview
+          path: |
+            logcat.txt
+            emulator.log
           if-no-files-found: warn

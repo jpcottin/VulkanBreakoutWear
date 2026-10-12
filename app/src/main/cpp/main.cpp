@@ -81,6 +81,9 @@ struct Engine {
     // FPS log accumulators.
     float fpsAccum  = 0.0f;
     int   fpsFrames = 0;
+    // Last logged value of game.isMidGame(): one log line per round start
+    // and end, for the instrumented smoke test.
+    bool midGame = false;
 };
 
 static double now_s() {
@@ -287,6 +290,14 @@ void android_main(android_app* app) {
             engine.game.setViewport(engine.renderer.width(), engine.renderer.height());
             // Pause gameplay while unfocused.
             if (engine.focused) engine.game.update(dt);
+
+            // The smoke test taps the title screen and polls logcat for this
+            // line to know its tap landed (a system overlay can swallow it).
+            bool midGame = engine.game.isMidGame();
+            if (midGame != engine.midGame) {
+                engine.midGame = midGame;
+                LOGI(midGame ? "Round started" : "Round over");
+            }
 
             cmds.clear();
             engine.game.render(cmds);
