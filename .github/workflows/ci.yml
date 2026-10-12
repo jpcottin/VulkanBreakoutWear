@@ -356,6 +356,12 @@ jobs:
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           EMU_DIR="$SDK/emulators/latest"
           "$EMU_DIR/emulator" -version 2>&1 | head -3 || true
+          # The preview launcher bakes the host's adb public key into the
+          # guest ramdisk when it starts; adb only generates that key when its
+          # daemon first runs. Without this, the guest comes up "unauthorized".
+          adb start-server
+          [ -f "$HOME/.android/adbkey.pub" ] || adb keygen "$HOME/.android/adbkey"
+          ls -la "$HOME/.android/adbkey" "$HOME/.android/adbkey.pub"
           # Without -qemu-top-dir the preview launcher runs the stable
           # engine from $SDK/emulator; pointed at its own directory it runs
           # its bundled QEMU, which exposes a virtio-gpu-rutabaga device and
